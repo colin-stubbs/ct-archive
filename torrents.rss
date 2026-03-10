@@ -224,6 +224,19 @@
       <guid isPermaLink="false">https://archive.org/download/ct_letsencrypt_oak2023/ct_letsencrypt_oak2023_archive.torrent</guid>
     </item>
     <item>
+      <title>oak.ct.letsencrypt.org/2025h1</title>
+      <link>https://archive.org/details/ct_letsencrypt_oak2025h1</link>
+      <description>Torrent archive for CT log: oak.ct.letsencrypt.org/2025h1</description>
+      <enclosure url="https://archive.org/download/ct_letsencrypt_oak2025h1/ct_letsencrypt_oak2025h1_archive.torrent" type="application/x-bittorrent" />
+      <guid isPermaLink="false">https://archive.org/download/ct_letsencrypt_oak2025h1/ct_letsencrypt_oak2025h1_archive.torrent</guid>
+    </item>
+    <item>
+      <title>oak.ct.letsencrypt.org/2025h2</title>
+      <description>Torrent archive for CT log: oak.ct.letsencrypt.org/2025h2</description>
+      <enclosure url="https://raw.githubusercontent.com/geomys/ct-archive/refs/heads/main/torrents/ct_letsencrypt_oak2025h2.torrent" type="application/x-bittorrent" />
+      <guid isPermaLink="false">https://raw.githubusercontent.com/geomys/ct-archive/refs/heads/main/torrents/ct_letsencrypt_oak2025h2.torrent</guid>
+    </item>
+    <item>
       <title>sabre.ct.comodo.com</title>
       <link>https://archive.org/details/ct_comodo_sabre</link>
       <description>Torrent archive for CT log: sabre.ct.comodo.com</description>
