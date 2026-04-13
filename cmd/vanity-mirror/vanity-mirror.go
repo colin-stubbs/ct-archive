@@ -1,7 +1,4 @@
-// Command vanity-mirror downloads an RFC 6962 log as a Static CT log.
-package main
 
-import (
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -34,6 +31,16 @@ import (
 )
 
 const batchSize = sunlight.TileWidth * 128
+
+// entryFetchConcurrency caps parallel get-entries requests per batch. Without a limit,
+// batchSize/32 goroutines (e.g. 1024 for default batchSize) share one http.Client and
+// overwhelm servers and local sockets, causing timeouts and 429s.
+const entryFetchConcurrency = 32
+
+// httpClientTimeout is the per-request deadline (including response body read). RFC 6962
+// get-entries responses can be large; 10s is too short on many networks and triggers
+// "context deadline exceeded" from net/http.
+const httpClientTimeout = 5 * time.Minute
 
 func main() {
 	if len(os.Args) != 1 && len(os.Args) != 2 {
@@ -99,12 +106,15 @@ func main() {
 	logger.Info("starting mirror", "origin", origin, "base_url", baseURL)
 
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: httpClientTimeout,
 		Transport: promhttp.InstrumentRoundTripperDuration(duration, &http.Transport{
-			MaxIdleConnsPerHost: 100,
+			MaxIdleConnsPerHost:   entryFetchConcurrency + 8,
+			MaxConnsPerHost:       0,
+			IdleConnTimeout:       90 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				dials.Inc()
-				return (&net.Dialer{}).DialContext(ctx, network, addr)
+				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, addr)
 			},
 		}),
 	}
@@ -136,8 +146,12 @@ func main() {
 	fetchBatch := func(ctx context.Context, start, end int64) ([]*sunlight.LogEntry, error) {
 		entries := make([]*sunlight.LogEntry, end-start)
 		grp, ctx := errgroup.WithContext(ctx)
+		sem := make(chan struct{}, entryFetchConcurrency)
 		for i := start; i < end; i += 32 {
+			i := i
 			grp.Go(func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				end := min(i+31, end-1)
 				url := fmt.Sprintf("%s/ct/v1/get-entries?start=%d&end=%d", baseURL, i, end)
 				req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
