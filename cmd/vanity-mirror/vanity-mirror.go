@@ -1,4 +1,7 @@
+// Command vanity-mirror downloads an RFC 6962 log as a Static CT log.
+package main
 
+import (
 	"bytes"
 	"context"
 	"crypto/sha256"
