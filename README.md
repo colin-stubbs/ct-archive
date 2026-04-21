@@ -144,10 +144,39 @@ The origin for the checkpoint is derived from the log's URL.
 Progress is tracked by storing partial unsigned checkpoints in the working
 directory. Only `get-sth` and `get-entries` requests are made to the log. Once
 the download is complete, the final checkpoint is verified against the Signed
-Tree Head, and the signature is stored in the checkpoint file.
+Tree Head, and the signature is stored in the checkpoint file. On a later run,
+both the in-progress unsigned file and the completed signed note are loaded
+correctly (the log public key from `log.v3.json` verifies the signed form).
+
+Parallel `get-entries` fetches are limited (semaphore) so the client does not open hundreds of simultaneous connections to the log; per-request HTTP timeouts allow large JSON responses without failing with `context deadline exceeded`.
 
 An optional command-line argument can be provided to specify a different base URL
 for fetching the log, e.g. a mirror. This URL is not persisted in the archive.
+
+#### Environment variables (`vanity-mirror`)
+
+`vanity-mirror` reads optional `VANITY_MIRROR_*` variables for HTTP behavior,
+concurrency, and retry timing. If unset, defaults match the previous hard-coded
+values (for example `VANITY_MIRROR_RESPONSE_HEADER_TIMEOUT` defaults to `60s`).
+
+| Variable | Default | Purpose |
+|----------|---------|--------|
+| `VANITY_MIRROR_HTTP_CLIENT_TIMEOUT` | `5m` | Per-request deadline for the full response (including body). Must be positive. |
+| `VANITY_MIRROR_RESPONSE_HEADER_TIMEOUT` | `60s` | Time to wait for response headers; **`0`** disables this limit (only the client timeout above still applies). |
+| `VANITY_MIRROR_DIAL_TIMEOUT` | `30s` | TCP dial timeout. Must be positive. |
+| `VANITY_MIRROR_IDLE_CONN_TIMEOUT` | `90s` | How long idle connections stay in the pool. |
+| `VANITY_MIRROR_ENTRY_FETCH_CONCURRENCY` | `32` | Parallel `get-entries` requests per batch (1–512). |
+| `VANITY_MIRROR_MAX_IDLE_CONNS_PER_HOST` | *concurrency+8* | Optional override for the HTTP transport; must be ≥ 1 if set. |
+| `VANITY_MIRROR_BATCH_SIZE` | `sunlight.TileWidth × 128` | How many tree entries are fetched per outer loop step. |
+| `VANITY_MIRROR_BATCH_RETRY_BACKOFFS` | *10 fixed steps* | Comma-separated durations between batch retries (e.g. `1s,5s,10s,...`); at least one value required if set. |
+| `VANITY_MIRROR_HTTP_429_DELAY` | `500ms` | Wait after an HTTP 429 before retrying in the inner loop. |
+
+**Batch size and checkpoints:** progress is stored in the `checkpoint` file. The
+mirrored tree size in that checkpoint must stay aligned with the configured batch
+size: for an incomplete mirror, `tree size mod batch size` must be zero. **Do
+not change `VANITY_MIRROR_BATCH_SIZE`** for a working directory that already
+has a checkpoint created with a different batch size; remove the checkpoint or
+restore the previous value.
 
 ### Archiving Static CT Logs
 

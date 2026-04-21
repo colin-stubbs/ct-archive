@@ -33,18 +33,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const batchSize = sunlight.TileWidth * 128
-
-// entryFetchConcurrency caps parallel get-entries requests per batch. Without a limit,
-// batchSize/32 goroutines (e.g. 1024 for default batchSize) share one http.Client and
-// overwhelm servers and local sockets, causing timeouts and 429s.
-const entryFetchConcurrency = 32
-
-// httpClientTimeout is the per-request deadline (including response body read). RFC 6962
-// get-entries responses can be large; 10s is too short on many networks and triggers
-// "context deadline exceeded" from net/http.
-const httpClientTimeout = 5 * time.Minute
-
 func main() {
 	if len(os.Args) != 1 && len(os.Args) != 2 {
 		fmt.Fprintf(os.Stderr, "usage: %s [MIRROR_URL]\n", os.Args[0])
@@ -52,6 +40,12 @@ func main() {
 	}
 
 	logger := slog.New(stdlog.Handler)
+
+	cfg, err := loadMirrorConfig()
+	if err != nil {
+		fatalError(logger, "invalid configuration", "err", err)
+	}
+	logMirrorConfig(logger, cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -108,19 +102,22 @@ func main() {
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	logger.Info("starting mirror", "origin", origin, "base_url", baseURL)
 
+	dialer := &net.Dialer{Timeout: cfg.DialTimeout}
 	client := &http.Client{
-		Timeout: httpClientTimeout,
+		Timeout: cfg.HTTPClientTimeout,
 		Transport: promhttp.InstrumentRoundTripperDuration(duration, &http.Transport{
-			MaxIdleConnsPerHost:   entryFetchConcurrency + 8,
+			MaxIdleConnsPerHost:   cfg.effectiveMaxIdleConnsPerHost(),
 			MaxConnsPerHost:       0,
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
+			IdleConnTimeout:       cfg.IdleConnTimeout,
+			ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				dials.Inc()
-				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, addr)
+				return dialer.DialContext(ctx, network, addr)
 			},
 		}),
 	}
+
+	batchSize := cfg.BatchSize
 
 	type rfc6962STH struct {
 		TreeSize          int64  `json:"tree_size"`
@@ -149,7 +146,7 @@ func main() {
 	fetchBatch := func(ctx context.Context, start, end int64) ([]*sunlight.LogEntry, error) {
 		entries := make([]*sunlight.LogEntry, end-start)
 		grp, ctx := errgroup.WithContext(ctx)
-		sem := make(chan struct{}, entryFetchConcurrency)
+		sem := make(chan struct{}, cfg.EntryFetchConcurrency)
 		for i := start; i < end; i += 32 {
 			i := i
 			grp.Go(func() error {
@@ -191,7 +188,7 @@ func main() {
 					select {
 					case <-ctx.Done():
 						return ctx.Err()
-					case <-time.After(500 * time.Millisecond):
+					case <-time.After(cfg.HTTP429Delay):
 					}
 				}
 				for j, e := range result.Entries {
@@ -222,14 +219,15 @@ func main() {
 	}
 	var tree tlog.Tree
 	if len(checkpointBytes) > 0 {
-		c, err := torchwood.ParseCheckpoint(string(checkpointBytes))
+		c, err := parseMirrorCheckpoint(checkpointBytes, origin, key)
 		if err != nil {
 			fatalError(logger, "failed to parse checkpoint", "err", err)
 		}
 		tree = c.Tree
 
 		if tree.N > sth.TreeSize || tree.N != sth.TreeSize && tree.N%batchSize != 0 {
-			fatalError(logger, "invalid progress value", "value", tree.N)
+			fatalError(logger, "invalid progress value (checkpoint tree size must be a multiple of batch size; adjust VANITY_MIRROR_BATCH_SIZE or remove checkpoint)",
+				"tree_n", tree.N, "batch_size", batchSize)
 		}
 	}
 	pb.Set64(tree.N)
@@ -237,18 +235,7 @@ func main() {
 	for n := tree.N; n < sth.TreeSize; n += batchSize {
 		end := min(n+batchSize, sth.TreeSize)
 		entries, err := fetchBatch(ctx, n, end)
-		backoffs := []time.Duration{
-			1 * time.Second,
-			5 * time.Second,
-			10 * time.Second,
-			30 * time.Second,
-			1 * time.Minute,
-			2 * time.Minute,
-			3 * time.Minute,
-			5 * time.Minute,
-			7 * time.Minute,
-			10 * time.Minute,
-		}
+		backoffs := cfg.BatchRetryBackoffs
 		for i := 0; err != nil && i < len(backoffs); i++ {
 			logger.Warn("failed to fetch batch, retrying",
 				"err", err, "attempt", i+1, "backoff", backoffs[i])
